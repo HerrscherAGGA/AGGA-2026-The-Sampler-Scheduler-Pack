@@ -1,0 +1,18 @@
+⚠️ Installation (The "Core Touch" Method)
+I had some issues wrapping this as a standard extension (too much overhead), so I went for the most efficient, "Power User" route: Direct Core Integration. It's faster, lighter, and works natively in A1111 and WebUI Forge.
+
+Step 1: Drop the .py files into your modules folder.
+
+Step 2: Open modules/sd_schedulers.py and add this line at the very end:
+
+""""""""""""""""""""""""""""""""""""""""""""""
+import modules.sd_agga_schedulers            
+""""""""""""""""""""""""""""""""""""""""""""""
+
+Step 3: Open modules/sd_samplers_kdiffusion.py and add this line at the very end:
+
+""""""""""""""""""""""""""""""""""""""""""""""
+import modules.sd_samplers_pseudo_hires_loader
+""""""""""""""""""""""""""""""""""""""""""""""
+
+That's it. No complex installation, just pure python logic injection.
