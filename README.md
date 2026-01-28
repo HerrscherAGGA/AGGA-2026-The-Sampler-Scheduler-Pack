@@ -1,13 +1,10 @@
 # AGGA 2026: The Sampler & Scheduler Pack
 ### Intelligent Rendering Engine for Stable Diffusion (A1111 / Forge)
 
-![AGGA Engine](https://img.shields.io/badge/AGGA-Engine_2026-blueviolet?style=for-the-badge) ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge) ![Architecture](https://img.shields.io/badge/Architecture-Latent_Injection-orange?style=for-the-badge)
-
+[![AGGA Engine](https://img.shields.io/badge/AGGA-Engine_2026-blueviolet?style=for-the-badge)](#) [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge)](#) [![Architecture](https://img.shields.io/badge/Architecture-Latent_Injection-orange?style=for-the-badge)](#)
 ---
 
-## 💀 "Are you still alive...?"
-
-No. Well... actually, I'm back with something juicy. The truth is, I'm in the red and I simply refuse to buy another external hard drive just to fill it with thousands of LoRAs to fix broken checkpoints.
+I'm back with something juicy. The truth is, I'm in the red and I simply refuse to buy another external hard drive just to fill it with thousands of LoRAs to fix broken checkpoints.
 
 So, instead of more gigabytes, I brought you **Intelligence**.
 Standard samplers (Euler, Heun, DPM) are mathematically pure but visually blind. They traverse noise linearly, unaware of what they are drawing. **AGGA** is different. It acts as an **Intelligent Middleware** between your prompt and the diffusion process.
@@ -33,77 +30,96 @@ I bypassed the standard Extension format because it adds too much overhead. This
 
 
 ```python
-# @title 🚀 Install AGGA 2026 Engine
+# @title 🧬 Install AGGA 2026 Engine (Universal)
+# @markdown Run this cell **AFTER** installing WebUI but **BEFORE** launching it.
+
 import os
 import requests
 from pathlib import Path
 
+# --- USER SELECTION ---
+# @markdown Select your WebUI Architecture:
+ARCHITECTURE = "A1111" # @param ["A1111", "Forge / Reforge"]
+
 # --- CONFIGURATION ---
-GITHUB_USER = "HerrscherAGGA" 
+GITHUB_USER = "HerrscherAGGA"
 REPO_NAME = "AGGA-2026-The-Sampler-Scheduler-Pack"
 
-# ⚠️ IMPORTANT: SELECT YOUR ARCHITECTURE ⚠️
-# Use 'modules-A1111' for Automatic1111
-# Use 'modules-Forge' for WebUI Forge / Reforge
-BRANCH = "modules-A1111" 
+# Map selection
+if ARCHITECTURE == "A1111":
+    BRANCH = "modules-A1111"
+else:
+    BRANCH = "modules-Forge-%26-Reforge" 
 
-BASE_URL = f"[https://raw.githubusercontent.com/](https://raw.githubusercontent.com/){GITHUB_USER}/{REPO_NAME}/{BRANCH}"
+# Construimos la URL Raw exacta
+BASE_URL = f"https://raw.githubusercontent.com/{GITHUB_USER}/{REPO_NAME}/{BRANCH}"
 AGGA_FILES = ['sd_agga_schedulers.py', 'sd_samplers_pseudo_hires.py', 'sd_samplers_pseudo_hires_loader.py']
 
-# --- PATH DETECTION ---
-base_paths = [
-    Path('/content/stable-diffusion-webui'),
-    Path('/content/webui_forge_cu121_torch231/stable-diffusion-webui'),
-    Path('/content/A1111'),
-    Path('/content/gdrive/MyDrive/sd/stable-diffusion-webui')
+# --- SMART PATH DETECTION ---
+possible_paths = [
+    Path('/content/stable-diffusion-webui'),                     # Standard A1111
+    Path('/content/webui_forge_cu121_torch231/stable-diffusion-webui'), # Forge standard
+    Path('/content/A1111'),                                      # Some notebooks
+    Path('/content/gdrive/MyDrive/sd/stable-diffusion-webui'),   # Drive installations
+    Path('/content/reforge/stable-diffusion-webui')              # Reforge specific
 ]
-WEBUI_PATH = next((p for p in base_paths if p.exists()), Path('/content/stable-diffusion-webui'))
-TARGET_MOD = WEBUI_PATH / "modules"
+
+# Find the first path that actually exists
+WEBUI_PATH = next((p for p in possible_paths if p.exists()), None)
+TARGET_MOD = WEBUI_PATH / "modules" if WEBUI_PATH else None
 
 # --- INSTALLER LOGIC ---
-def download_and_install():
-    if not TARGET_MOD.exists():
-        print("❌ Error: 'modules' folder not found. Is WebUI installed?")
+def install_engine():
+    if not WEBUI_PATH or not TARGET_MOD.exists():
+        print(f"❌ Error: WebUI folder not found.")
+        print(f"   PLEASE RUN THE WEBUI INSTALLER CELL FIRST.")
         return
 
-    print(f"🚀 Installing AGGA 2026 (Branch: {BRANCH})...")
+    print(f"🔍 WebUI detected at: {WEBUI_PATH}")
+    print(f"🚀 Injecting AGGA 2026 Engine ({ARCHITECTURE} Mode)...")
+    print(f"   Using Branch: {BRANCH}")
+    
     success_count = 0
     
+    # 1. Download Files
     for filename in AGGA_FILES:
         url = f"{BASE_URL}/{filename}"
         dest = TARGET_MOD / filename
         try:
-            print(f"⬇️ Downloading {filename}...")
+            print(f"  ⬇️ Fetching {filename}...", end=" ")
             r = requests.get(url)
             if r.status_code == 404:
-                print(f"❌ Error 404: File not found. Check if branch '{BRANCH}' exists.")
+                print(f"❌ Failed (404). URL invalid:\n     {url}")
                 return
             r.raise_for_status()
             dest.write_bytes(r.content)
+            print("OK")
             success_count += 1
         except Exception as e:
-            print(f"❌ Connection Error: {e}")
+            print(f"❌ Error: {e}")
             return
 
+    # 2. Inject Code (Patching)
     if success_count == len(AGGA_FILES):
-        # Inject Imports
-        for core_file, import_line in [
+        patches = [
             ("sd_schedulers.py", "import modules.sd_agga_schedulers"),
             ("sd_samplers_kdiffusion.py", "import modules.sd_samplers_pseudo_hires_loader")
-        ]:
+        ]
+        
+        print("\n🛠️ Applying Neural Patches...")
+        for core_file, import_line in patches:
             fpath = TARGET_MOD / core_file
             if fpath.exists():
                 content = fpath.read_text()
                 if import_line not in content:
                     with open(fpath, "a") as f: f.write(f"\n{import_line}\n")
-                    print(f"💉 Injected hook into {core_file}")
+                    print(f"  💉 Hook injected into {core_file}")
                 else:
-                    print(f"✨ {core_file} already patched.")
+                    print(f"  ✨ {core_file} already active")
         
-        print(f"\n✅ Installation Complete! Please RESTART your WebUI.")
+        print(f"\n✅ AGGA Engine Installed successfully.")
 
-download_and_install()
-
+install_engine()
 ```
 ---
 
