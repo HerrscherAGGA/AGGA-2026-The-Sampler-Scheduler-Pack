@@ -1,8 +1,7 @@
 # AGGA 2026: The Sampler & Scheduler Pack
 ### Intelligent Rendering Engine for Stable Diffusion (A1111 / Forge)
 
-![AGGA Engine](https://img.shields.io/badge/AGGA-Engine_2026-blueviolet?style=for-the-badge) ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge) ![Architecture](https://img.shields.io/badge/Architecture-Latent_Injection-orange?style=for-the-badge)
-
+[![AGGA Engine](https://img.shields.io/badge/AGGA-Engine_2026-blueviolet?style=for-the-badge)](#) [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge)](#) [![Architecture](https://img.shields.io/badge/Architecture-Latent_Injection-orange?style=for-the-badge)](#)
 ---
 
 I'm back with something juicy. The truth is, I'm in the red and I simply refuse to buy another external hard drive just to fill it with thousands of LoRAs to fix broken checkpoints.
@@ -46,11 +45,10 @@ ARCHITECTURE = "A1111" # @param ["A1111", "Forge / Reforge"]
 GITHUB_USER = "HerrscherAGGA"
 REPO_NAME = "AGGA-2026-The-Sampler-Scheduler-Pack"
 
-# Map selection to your EXACT branches
+# Map selection
 if ARCHITECTURE == "A1111":
     BRANCH = "modules-A1111"
 else:
-    # Usamos el nombre codificado para URL (el & se convierte en %26)
     BRANCH = "modules-Forge-%26-Reforge" 
 
 # Construimos la URL Raw exacta
