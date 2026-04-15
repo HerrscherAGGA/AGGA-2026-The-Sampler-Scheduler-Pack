@@ -17,6 +17,10 @@ def pseudo_hires_sigmas(n, sigma_min, sigma_max, device):
     sigmas[-2] = sigmas[-1]
     return sigmas
 
+def get_sigmas_pseudo_native(n, sigma_min, sigma_max, device):
+    """Tu lógica original de rampas Soft/Sharp ahora como Scheduler universal."""
+    return pseudo_hires_sigmas(n, sigma_min, sigma_max, device)
+
 def get_sigmas_agga_dmd(n, sigma_min, sigma_max, device):
     rho = 7.0 
     ramp = torch.linspace(0, 1, n, device=device)
@@ -89,8 +93,6 @@ def get_sigmas_agga_pixel_staircase(n, sigma_min, sigma_max, device):
             sigmas[i] = sigmas[i-1] * 0.98 
     return torch.cat([sigmas, sigmas.new_zeros([1])])
 
-import torch
-
 def get_sigmas_agga_pixel_staircase_v2(
     n,
     sigma_min,
@@ -104,7 +106,6 @@ def get_sigmas_agga_pixel_staircase_v2(
     - hold_steps: cuántos pasos se 'congelan'
     - decay: cuánto cae el sigma en pasos congelados
     """
-
     t = torch.linspace(0, 1, n, device=device)
     s_max = torch.as_tensor(sigma_max, device=device)
     s_min = torch.as_tensor(sigma_min, device=device)
@@ -124,10 +125,53 @@ def get_sigmas_agga_pixel_staircase_v2(
 
 
 def get_sigmas_agga_smart(n, sigma_min, sigma_max, device):
-    if n <= 8:
+       
+    # 1. ESCÁNER DE PROMPT (Para overrides manuales)
+    prompt_tags = ""
+    try:
+        for frame_info in inspect.stack():
+            if 'p' in frame_info.frame.f_locals:
+                p_obj = frame_info.frame.f_locals['p']
+                if hasattr(p_obj, 'prompt'):
+                    prompt_tags = (str(p_obj.prompt) + " " + str(p_obj.all_prompts)).lower()
+                    break
+    except:
+        pass
+
+    # 2. SELECTOR MANUAL (Prioridad Absoluta)
+    if "sched_ays" in prompt_tags: 
+        print(" AGGA SCHEDULER: Forzado a [AYS Anchor]")
+        return get_sigmas_agga_ays_anchor(n, sigma_min, sigma_max, device)
+    
+    if "sched_turbo" in prompt_tags: 
+        print(" AGGA SCHEDULER: Forzado a [DMD Turbo]")
         return get_sigmas_agga_dmd(n, sigma_min, sigma_max, device)
-    else:
+    
+    if "sched_repair" in prompt_tags: 
+        print(" AGGA SCHEDULER: Forzado a [Double Anchor]")
+        return get_sigmas_agga_double_anchor(n, sigma_min, sigma_max, device)
+
+    # 3. LÓGICA AUTOMÁTICA POR ZONAS (La magia)
+    
+    # ZONA 1: LIGHTNING (1-4 Pasos)
+    if n <= 4:
+        return get_sigmas_agga_dmd(n, sigma_min, sigma_max, device)
+
+    # ZONA 2: TURBO (5-8 Pasos)
+    elif n <= 8:
+        return get_sigmas_agga_dmd(n, sigma_min, sigma_max, device)
+
+    # ZONA 3: HYBRID SWEET-SPOT (9-19 Pasos) -> La zona de FUSIÓN
+    elif n < 20:
+        return get_sigmas_agga_ays_anchor(n, sigma_min, sigma_max, device)
+
+    # ZONA 4: HIGH FIDELITY (20-49 Pasos)
+    elif n < 50:
         return get_sigmas_dynamic_rho(n, sigma_min, sigma_max, device)
+
+    # ZONA 5: DEEP REPAIR / WALLPAPER (50+ Pasos)
+    else:
+        return get_sigmas_agga_double_anchor(n, sigma_min, sigma_max, device)
 
 
 def get_sigmas_agga_ays_anchor(n, sigma_min, sigma_max, device):
@@ -242,34 +286,191 @@ def sample_dpmpp_2m_pseudo_hires(model, x, sigmas, extra_args=None, callback=Non
         if callback: callback({"x": x, "i": i, "sigma": sigma, "sampling_step": i + 1, "sampling_steps": total_steps})
     return x
 
+# =====================================================
+# AGGA SMART-COMBO V9 (Universal Fusion)
+# =====================================================
 @torch.no_grad()
-def sample_pseudo_hires_flash_v2(model, x, sigmas, extra_args=None, callback=None, **kwargs):
+def sample_agga_smart_combo(model, x, sigmas, extra_args=None, callback=None, **kwargs):
     extra_args = extra_args or {}
     s_in = x.new_ones([x.shape[0]])
+    
     total_steps = len(sigmas) - 1
     shared.state.sampling_steps = total_steps
+    
+    # ---------------------------------------------------------
+    # 1. Prompt Reader
+    # ---------------------------------------------------------
+    prompt_tags = ""
+    try:
+        # Buscamos en la pila de ejecución el objeto 'p' de A1111
+        for frame_info in inspect.stack():
+            if 'p' in frame_info.frame.f_locals:
+                p_obj = frame_info.frame.f_locals['p']
+                if hasattr(p_obj, 'prompt'):
+                    prompt_tags = (str(p_obj.prompt) + " " + str(p_obj.all_prompts)).lower()
+                    break
+    except:
+        pass
+
+    # ---------------------------------------------------------
+    # 2. CONFIGURACIÓN DE ESTRATEGIA
+    # ---------------------------------------------------------
+    
+    # Valores por defecto
+    strategy = "AUTO"
+    engine_1 = "NONE"
+    engine_2 = "NONE"
+    split_ratio = 0.5  # 50% por defecto
+    
+    # A) DETECCIÓN DE MODO FUSIÓN (Prioridad Alta)
+    if "fsn_" in prompt_tags:
+        strategy = "FUSION"
+        
+        # Detectar combinaciones
+        if "euler_dpm" in prompt_tags:
+            engine_1, engine_2 = "EULER_A", "DPM2"
+            desc = "Euler A >> DPM++ 2M"
+        elif "native_flash" in prompt_tags:
+            engine_1, engine_2 = "NATIVE", "FLASH"
+            desc = "Native >> Flash V2"
+        elif "dpm_euler" in prompt_tags:
+            engine_1, engine_2 = "DPM2", "EULER_A"
+            desc = "DPM++ 2M >> Euler A"
+        elif "native_dpm" in prompt_tags:
+            engine_1, engine_2 = "NATIVE", "DPM2"
+            desc = "Native >> DPM++ 2M"
+        else:
+            # Fusión por defecto si solo pone 'fsn_'
+            engine_1, engine_2 = "EULER_A", "DPM2"
+            desc = "Standard Fusion"
+
+        # Detectar punto de corte personalizado (ej: split_70)
+        # Busca palabras como 'split_30', 'split_80'
+        import re
+        match = re.search(r'split_(\d+)', prompt_tags)
+        if match:
+            split_val = int(match.group(1))
+            split_ratio = split_val / 100.0
+            
+        shared.state.textinfo = f"AGGA FUSION: [{desc}] @ {int(split_ratio*100)}%"
+
+    # B) MODO AUTOMÁTICO (Si no hay fusión)
+    else:
+        if total_steps > 15:
+            strategy = "HIGH_RES"
+            engine_1 = "FLASH" # Solo usa un motor
+            shared.state.textinfo = "AGGA High-Res: [Flash V2]"
+        else:
+            strategy = "SMART_LOW"
+            engine_1 = "SMART" # El motor se decide en el paso 0
+            shared.state.textinfo = "AGGA Smart: Analyzing..."
+
+    # ---------------------------------------------------------
+    # 3. BUCLE DE GENERACIÓN
+    # ---------------------------------------------------------
+    
+    # Estados internos
     old_denoised = None
+    h_last = None
+    current_engine = engine_1
+    
+    # Helper para DPM
+    def t_fn(sigma): return -sigma.log()
+
     for i in range(total_steps):
         shared.state.sampling_step = i + 1
-        sigma, sigma_next = sigmas[i], sigmas[i + 1]
-        dt = sigma_next - sigma
+        sigma = sigmas[i]
+        sigma_next = sigmas[i + 1]
+        
+        # --- Predicción ---
         denoised = model(x, sigma * s_in, **extra_args)
-        if old_denoised is None:
+        
+        # --- LÓGICA DE CAMBIO DE MOTOR (Fusión) ---
+        if strategy == "FUSION":
+            switch_step = int(total_steps * split_ratio)
+            
+            if i < switch_step:
+                new_engine = engine_1
+            else:
+                new_engine = engine_2
+            
+            # Si cambiamos de motor, limpiamos la memoria del sampler anterior
+            if new_engine != current_engine:
+                old_denoised = None # Reset vital para DPM
+                current_engine = new_engine
+
+        # --- LÓGICA SMART (Análisis en paso 0) ---
+        if strategy == "SMART_LOW" and i == 0:
+            energy = denoised.std()
+            if energy < 0.88:
+                current_engine = "EULER_A"
+                tag = "Rescue: Euler A"
+            elif energy > 1.25:
+                current_engine = "DPM2"
+                tag = "Rescue: DPM++ 2M"
+            else:
+                current_engine = "NATIVE"
+                tag = "Native Optimized"
+            shared.state.textinfo = f"AGGA Smart: [{tag}]"
+
+        # -----------------------------------------------------
+        # EJECUCIÓN DE MOTORES
+        # -----------------------------------------------------
+        
+        # === MOTOR: DPM++ 2M (Exacto) ===
+        if current_engine == "DPM2":
+            t, t_next = t_fn(sigma), t_fn(sigma_next)
+            h = t_next - t
+            
+            if old_denoised is None or sigma_next == 0:
+                x = (sigma_next / sigma) * x - (-h).expm1() * denoised
+            else:
+                h_last = -sigmas[i-1].log() + sigmas[i].log()
+                r = h / h_last
+                denoised_d = (1 + 1 / (2 * r)) * denoised - (1 / (2 * r)) * old_denoised
+                x = (sigma_next / sigma) * x - (-h).expm1() * denoised_d
+
+        # === MOTOR: EULER ANCESTRAL (Exacto) ===
+        elif current_engine == "EULER_A":
+            sigma_up = (sigma_next ** 2 * (sigma ** 2 - sigma_next ** 2) / sigma ** 2) ** 0.5
+            sigma_down = (sigma_next ** 2 - sigma_up ** 2) ** 0.5
             d = (x - denoised) / sigma
-            x = x + d * dt * 1.05
-        else:
-            d = (x - denoised) / sigma
-            d_old = (x - old_denoised) / sigmas[max(i-1, 0)]
-            x = x + (0.6 * d + 0.4 * d_old) * dt
-        if i > total_steps * 0.50:
-            progress = (i - total_steps * 0.50) / (total_steps * 0.50)
-            boost = 1.08 + progress * 0.18
-            x = x + d * dt * boost
-        if i == total_steps - 1:
-            x = x + (denoised - x) * 0.15
+            
+            x = x + d * (sigma_down - sigma)
+            if sigma_next > 0:
+                x = x + torch.randn_like(x) * sigma_up
+
+        # === MOTOR: NATIVE (Turbo Stable) ===
+        elif current_engine == "NATIVE":
+            if i < total_steps - 1:
+                x = denoised + (x - denoised) * (sigma_next / sigma)
+            else:
+                x = denoised
+
+        # === MOTOR: FLASH V2 (Texturizado) ===
+        elif current_engine == "FLASH":
+            dt = sigma_next - sigma
+            if old_denoised is None:
+                d = (x - denoised) / sigma
+                x = x + d * dt * 1.05
+            else:
+                d = (x - denoised) / sigma
+                d_old = (x - old_denoised) / sigmas[max(i-1, 0)]
+                x = x + (0.6 * d + 0.4 * d_old) * dt
+            
+            # Boost Lógico de Flash
+            if i > total_steps * 0.50:
+                progress = (i - total_steps * 0.50) / (total_steps * 0.50)
+                boost = 1.08 + progress * 0.18 
+                x = x + d * dt * boost
+            if i == total_steps - 1:
+                x = x + (denoised - x) * 0.15
+
         old_denoised = denoised
-        if callback: callback({"x": x, "i": i, "sigma": sigma, "sampling_step": i + 1, "sampling_steps": total_steps})
-    return x
+        if callback: callback({"x": x, "i": i, "sigma": sigma, "sampling_step": i, "sampling_steps": total_steps})
+        if shared.state.interrupted: break
+
+    return torch.clamp(x, -5.0, 5.0)
 
 @torch.no_grad()
 def sample_pseudo_hires_detail(model, x, sigmas, extra_args=None, callback=None, **kwargs):
@@ -423,8 +624,6 @@ def sample_agga_hyper_detail_hybrid(model, x, sigmas, extra_args=None, callback=
 # =====================================================
 @torch.no_grad()
 def sample_agga_style_repair_prompt_aware(model, x, sigmas, extra_args=None, callback=None, **kwargs):
-    # 1. HACK CLAVE: Pedimos al backend que guarde el ruido negativo (Uncond)
-    # Esto es vital. Sin esto, no podemos saber "qué es lo que el modelo quiere ocultar".
     if hasattr(model, 'need_last_noise_uncond'):
         model.need_last_noise_uncond = True
     
@@ -443,65 +642,37 @@ def sample_agga_style_repair_prompt_aware(model, x, sigmas, extra_args=None, cal
         dt = sigma_next - sigma
         progress = i / total_steps
         
-        # 2. Predicción estándar (Ya tiene el CFG aplicado)
-        # Esto es: "Uncond + (Cond - Uncond) * CFG_Scale"
         denoised = model(x, sigma * s_in, **extra_args)
         
-        # 3. RECUPERACIÓN DEL VECTOR OCULTO (Lógica CFG++)
-        # Intentamos recuperar la imagen "Incondicional" (la tendencia natural del modelo, ej: 2D)
-        # para compararla con la "Denoised" (tu prompt, ej: 3D).
         style_force_vector = None
-        
-        # Verificamos si el modelo guardó el ruido incondicional (Uncond)
         last_noise_uncond = getattr(model, 'last_noise_uncond', None)
         
         if last_noise_uncond is not None and i > BOCETADO_STEPS:
-            # Reconstruimos la imagen "Incondicional" (x0_uncond) desde el ruido
-            # x0 = x - sigma * noise
             uncond_denoised = x - sigma * last_noise_uncond
-            
-            # EL VECTOR DE LA VERDAD:
-            # La diferencia entre lo que obtuviste (denoised) y lo que el modelo quería darte (uncond)
-            # es la esencia pura de tu prompt.
             style_force_vector = denoised - uncond_denoised
 
-        # 4. Máscara de Estilo (Tu algoritmo clásico 2.8x)
         dy = torch.abs(denoised[:, :, 1:, :] - denoised[:, :, :-1, :])
         dx = torch.abs(denoised[:, :, :, 1:] - denoised[:, :, :, :-1])
         dy = F.pad(dy, (0, 0, 0, 1), mode='replicate')
         dx = F.pad(dx, (0, 1, 0, 0), mode='replicate')
         style_mask = torch.clamp(torch.sqrt(dx**2 + dy**2).mean(dim=1, keepdim=True) * 2.8, 0.0, 1.0)
 
-        # --- FASE 1: BOCETADO ---
         if i < BOCETADO_STEPS:
-            # Boost estructural simple para definir formas
             boost = 1.20 + (i / BOCETADO_STEPS) * 0.20
             d = (x - denoised) / sigma
             x = x + d * dt * boost
-        
-        # --- FASE 2: RECUPERACIÓN DE ESTILO DIRIGIDA ---
         else:
-            # A. Inyección de Prompt Vector (La magia nueva)
             if style_force_vector is not None:
-                # Si el modelo tiene un estilo oculto 3D, este vector apuntará fuerte hacia él.
-                # Lo inyectamos SOLO donde hay detalle (style_mask).
-                # Multiplicador 0.25 es fuerte pero seguro porque está enmascarado.
                 prompt_guidance = style_force_vector * style_mask * 0.25
-                
-                # Sumamos esa guía a la imagen actual. Esto fuerza el estilo.
                 x = x + prompt_guidance * torch.abs(dt)
 
-            # B. Tu lógica clásica de reparación (Anti-Blur)
             x = x + (x - prev_x) * 0.035 * style_mask
-            
-            # C. Paso de Euler estándar para avanzar
             d = (x - denoised) / sigma
             x = x + d * dt
 
-        # 5. Protección de Varianza (Evita que el CFG extra queme la imagen)
         if i >= BOCETADO_STEPS:
             x_std = x.std()
-            if x_std > 1.15: # Límite de seguridad
+            if x_std > 1.15: 
                 x = x * (1.15 / x_std)
 
         prev_x = x.clone()
@@ -604,11 +775,6 @@ def sample_agga_pixel_master(model, x, sigmas, extra_args=None, callback=None, *
     total_steps = len(sigmas) - 1
     shared.state.sampling_steps = total_steps
     
-    # AJUSTES V10
-    # Factor de reducción. 
-    # 2.0 = Bloques visibles (SNES)
-    # 3.0 - 4.0 = Bloques muy grandes (Atari/NES)
-    # Si con 2.0 se ve borroso, SUBE a 3.0 o 4.0.
     block_size = 1.88
     
     for i in range(total_steps):
@@ -617,31 +783,19 @@ def sample_agga_pixel_master(model, x, sigmas, extra_args=None, callback=None, *
         sigma_next = sigmas[i + 1]
         dt = sigma_next - sigma
         
-        # 1. GENERACIÓN (Limpia y segura)
         denoised = model(x, sigma * s_in, **extra_args)
         
-        # Pasos intermedios normales
         d = (x - denoised) / sigma
         x = x + d * dt
 
-        # 2. INTERVENCIÓN FINAL (Solo Estructura)
-        # Solo en el último paso aplicamos la cuadrícula.
         if i == total_steps - 1:
-            # Tomamos la imagen final
             latents = denoised
-            
-            # Calculamos el tamaño reducido
             h, w = latents.shape[-2:]
             small_h, small_w = int(h / block_size), int(w / block_size)
             
-            # DOWN: Usamos 'area' para promediar los colores correctamente
-            # (Esto imita la lógica de 'average_box' de pyxelate)
             latents_pixelated = F.interpolate(latents, size=(small_h, small_w), mode='area')
-            
-            # UP: Usamos 'nearest' para crear los bordes duros
             latents_pixelated = F.interpolate(latents_pixelated, size=(h, w), mode='nearest')
             
-            # Sustitución directa (Sin tocar colores, solo forma)
             x = latents_pixelated
 
         if callback:
@@ -659,10 +813,7 @@ def sample_agga_structural_detail(model, x, sigmas, extra_args=None, callback=No
     total_steps = len(sigmas) - 1
     shared.state.sampling_steps = total_steps
     
-    # Variables de estado para DPM++ 2M
     old_d = None
-    
-    # Punto de corte: 45% Estructura pura -> 55% Detalle AGGA
     split_idx = int(total_steps * 0.45)
 
     for i in range(total_steps):
@@ -671,51 +822,29 @@ def sample_agga_structural_detail(model, x, sigmas, extra_args=None, callback=No
         sigma_next = sigmas[i + 1]
         dt = sigma_next - sigma
         
-        # 1. Predicción del modelo
         denoised = model(x, sigma * s_in, **extra_args)
         d = (x - denoised) / sigma
 
-        # ==========================================
-        # FASE 1: ESTRUCTURA SAGRADA (DPM++ 2M Puro)
-        # ==========================================
         if i < split_idx:
-            # Algoritmo DPM++ 2M estándar para máxima coherencia anatómica
             if old_d is None:
-                # Paso Euler inicial (necesario para arrancar)
                 x = x + d * dt
             else:
-                # Paso DPM++ 2M (promedio de derivadas)
-                # Esto suaviza la trayectoria y evita deformaciones
                 x = x + 0.5 * (d + old_d) * dt
-                
-        # ==========================================
-        # FASE 2: INYECCIÓN DE DETALLE AGGA (Native)
-        # ==========================================
         else:
-            # Calculamos la máscara de detalle (tu algoritmo de detección de bordes)
             dy = torch.abs(denoised[:, :, 1:, :] - denoised[:, :, :-1, :])
             dx = torch.abs(denoised[:, :, :, 1:] - denoised[:, :, :, :-1])
             dy = F.pad(dy, (0, 0, 0, 1), mode='replicate')
             dx = F.pad(dx, (0, 1, 0, 0), mode='replicate')
-            # Sensibilidad ajustada a 2.2x para no quemar la imagen
             detail_mask = torch.clamp((dx + dy).mean(dim=1, keepdim=True) * 2.2, 0.0, 1.0)
             
-            # Boost progresivo: Empieza en 1.0 y sube hasta 1.15 al final
-            # Solo se aplica en las zonas de detalle (detail_mask)
             progress_phase2 = (i - split_idx) / (total_steps - split_idx)
             boost_amount = 1.0 + (progress_phase2 * 0.15)
-            
-            # Interpolamos el dt: Normal en zonas planas, Boosted en zonas de detalle
             final_dt = dt * (1.0 + (boost_amount - 1.0) * detail_mask)
-            
-            # Aplicamos el paso (usamos Euler aquí para respuesta directa al boost)
             x = x + d * final_dt
             
-            # Micro-Sharpening (solo en los últimos pasos para textura "crisp")
             if progress_phase2 > 0.6:
                 x = x + (x - x.clone()) * 0.04 * detail_mask
 
-        # Guardamos la derivada para el siguiente paso DPM
         old_d = d
 
         if callback is not None:
@@ -727,8 +856,8 @@ def sample_agga_structural_detail(model, x, sigmas, extra_args=None, callback=No
                 "sampling_steps": total_steps
             })
 
-    # Clamp de seguridad final
     return torch.clamp(x, -5.0, 5.0)
+
 # =====================================================
 # LORA BRIDGE (PDXL TO VELVETTE_V4/ NoobAI)
 # =====================================================
@@ -739,7 +868,6 @@ def sample_agga_lora_bridge(model, x, sigmas, extra_args=None, callback=None, **
     s_in = x.new_ones([x.shape[0]])
     total_steps = len(sigmas) - 1
     
-    # ADN de Pony V6 (Valores reales extraídos)
     PONY_STD_TARGET = 0.016593
     DELTA_MEAN = -0.0104 
     
@@ -748,29 +876,20 @@ def sample_agga_lora_bridge(model, x, sigmas, extra_args=None, callback=None, **
         dt = sigma_next - sigma
         progress = i / total_steps
         
-        # 1. Predicción y Limpieza Anti-NaNs
         denoised = model(x, sigma * s_in, **extra_args)
         denoised = torch.nan_to_num(denoised, nan=0.0, posinf=4.0, neginf=-4.0)
         
-        # 2. Monitor de Salud del Tensor
         mag = denoised.std()
         
-        # --- EL SUELO DE ENERGÍA AGGA ---
-        # Si la energía cae demasiado (gris), forzamos recuperación
         if mag < 0.90:
             denoised = denoised * (0.95 / (mag + 1e-6))
 
-        # 3. Inyección de ADN con Factor 1.3 (Blindada)
         influence = 1.0 - (2.0 * progress - 1.0)**4
-        # El ratio de escala se calcula con precisión de seguridad
         scale_ratio = torch.clamp(torch.tensor(PONY_STD_TARGET / (mag + 1e-6)), 0.8, 1.25)
         
-        # Aplicamos la fórmula de ADN:
-        # $$denoised = denoised \cdot (1 + (ratio - 1) \cdot influence \cdot 1.3) + (\Delta\mu \cdot influence)$$
         denoised = denoised * (1.0 + (scale_ratio - 1.0) * influence * 1.3)
-        denoised = denoised + (DELTA_MEAN * influence * 0.7) # Reducido un 30% para evitar el colapso
+        denoised = denoised + (DELTA_MEAN * influence * 0.7) 
 
-        # 4. Salto de Consistencia con Suelo de Precisión
         safe_sigma = max(sigma.item(), 1e-4)
         d = (x - denoised) / safe_sigma
         x = x + d * dt 
@@ -787,7 +906,6 @@ def sample_agga_lora_bridge_stable(model, x, sigmas, extra_args=None, callback=N
     s_in = x.new_ones([x.shape[0]])
     total_steps = len(sigmas) - 1
     
-    # ADN de Pony V6 (Valores reales extraídos)
     PONY_STD_TARGET = 0.016593
     DELTA_MEAN = -0.0104 
     
@@ -796,31 +914,20 @@ def sample_agga_lora_bridge_stable(model, x, sigmas, extra_args=None, callback=N
         dt = sigma_next - sigma
         progress = i / total_steps
         
-        # 1. Predicción y Sanitización Instantánea (FP16 Safe)
         denoised = model(x, sigma * s_in, **extra_args)
         denoised = torch.nan_to_num(denoised, nan=0.0, posinf=4.0, neginf=-4.0)
         
-        # 2. Monitor de Salud y Suelo de Energía
         mag = denoised.std()
         
-        # Si la energía cae por debajo de 0.90 (zona de peligro gris), inyectamos soporte.
-        # Esto es lo que salvó tu imagen en el paso 08.
         if mag < 0.90:
             denoised = denoised * (0.95 / (mag + 1e-6))
 
-        # 3. Inyección de ADN Pony
-        # Curva de influencia tipo campana
         influence = 1.0 - (2.0 * progress - 1.0)**4
-        
-        # Cálculo del ratio con límites estrictos (basado en tus logs)
         scale_ratio = torch.clamp(torch.tensor(PONY_STD_TARGET / (mag + 1e-6)), 0.8, 1.25)
         
-        # Aplicamos el ADN con tu factor agresivo de 1.3, ahora que es seguro
         denoised = denoised * (1.0 + (scale_ratio - 1.0) * influence * 1.3)
         denoised = denoised + (DELTA_MEAN * influence * 0.7)
 
-        # 4. Salto de Consistencia Blindado
-        # Evita la división por cero al final que causa la "niebla"
         safe_sigma = max(sigma.item(), 1e-4)
         d = (x - denoised) / safe_sigma
         x = x + d * dt 
@@ -845,36 +952,24 @@ def sample_agga_lora_bridge_sharp(model, x, sigmas, extra_args=None, callback=No
         dt = sigma_next - sigma
         progress = i / total_steps
         
-        # 1. Predicción y Sanitización
         denoised = model(x, sigma * s_in, **extra_args)
         denoised = torch.nan_to_num(denoised, nan=0.0, posinf=4.0, neginf=-4.0)
         
-        # 2. Monitor de Salud
         mag = denoised.std()
 
-        # --- INYECTOR DE NITIDEZ INTELIGENTE ---
-        # Condición doble:
-        # a) Solo en fase de textura (30% al 85%)
-        # b) SOLO si el tensor está "✅ ESTABLE" (mag >= 0.90)
         if 0.3 < progress < 0.85 and mag >= 0.90:
-            # Aislamiento de altas frecuencias (bordes, pestañas, texturas finas)
             blurred = F.avg_pool2d(denoised, kernel_size=3, stride=1, padding=1)
             high_freq = denoised - blurred
-            # Inyectamos un 15% extra de nitidez
             denoised = denoised + (high_freq * 0.15)
         
-        # --- SUELO DE ENERGÍA ---
-        # Si no está estable, aplicamos el rescate normal
         if mag < 0.90:
             denoised = denoised * (0.95 / (mag + 1e-6))
 
-        # 3. Inyección de ADN Pony (Igual que la estable)
         influence = 1.0 - (2.0 * progress - 1.0)**4
         scale_ratio = torch.clamp(torch.tensor(PONY_STD_TARGET / (mag + 1e-6)), 0.8, 1.25)
         denoised = denoised * (1.0 + (scale_ratio - 1.0) * influence * 1.3)
         denoised = denoised + (DELTA_MEAN * influence * 0.7)
 
-        # 4. Salto de Consistencia Blindado
         safe_sigma = max(sigma.item(), 1e-4)
         d = (x - denoised) / safe_sigma
         x = x + d * dt 
@@ -891,10 +986,8 @@ def sample_agga_lora_bridge_ultra_sharp(model, x, sigmas, extra_args=None, callb
     s_in = x.new_ones([x.shape[0]])
     total_steps = len(sigmas) - 1
     
-    # Valores de ADN
     PONY_STD_TARGET = 0.016593
     DELTA_MEAN = -0.0104
-    # NUEVO: Factor de "Temperatura" o Vibrancia (1.15 = 15% extra de pop)
     VIBRANCY_FACTOR = 1.15 
     
     for i in range(total_steps):
@@ -902,44 +995,30 @@ def sample_agga_lora_bridge_ultra_sharp(model, x, sigmas, extra_args=None, callb
         dt = sigma_next - sigma
         progress = i / total_steps
         
-        # 1. Predicción y Sanitización
         denoised = model(x, sigma * s_in, **extra_args)
         denoised = torch.nan_to_num(denoised, nan=0.0, posinf=4.5, neginf=-4.5)
         
-        # 2. Monitor de Salud
         mag = denoised.std()
 
-        # --- FASE DE INYECCIÓN ACTIVA (30% al 85%) ---
         if 0.3 < progress < 0.85 and mag >= 0.88:
-            # A) INYECTOR DE NITIDEZ (Bordes)
             blurred = F.avg_pool2d(denoised, kernel_size=3, stride=1, padding=1)
             high_freq = denoised - blurred
-            denoised = denoised + (high_freq * 0.18) # Ligeramente más agresivo (18%)
+            denoised = denoised + (high_freq * 0.18) 
             
-            # B) NUEVO: INYECTOR DE VIBRANCIA (Temperatura/Color)
-            # Calculamos la media actual del tensor
             current_mean = denoised.mean(dim=(1, 2, 3), keepdim=True)
-            # Centramos el color alrededor de la media
             centered_color = denoised - current_mean
-            # Estiramos la saturación (boost de vibrancia) sin mover el brillo medio
             boosted_color = centered_color * VIBRANCY_FACTOR
-            # Restauramos la media
             denoised = boosted_color + current_mean
         
-        # --- SUELO DE ENERGÍA (Anti-Gris) ---
         if mag < 0.88:
              denoised = denoised * (0.95 / (mag + 1e-6))
 
-        # 3. Inyección de ADN Pony (Estructural)
         influence = 1.0 - (2.0 * progress - 1.0)**4
         scale_ratio = torch.clamp(torch.tensor(PONY_STD_TARGET / (mag + 1e-6)), 0.8, 1.3)
         
-        # Aplicamos el ADN con tu factor 1.3
         denoised = denoised * (1.0 + (scale_ratio - 1.0) * influence * 1.3)
-        # Aplicamos el desplazamiento de negros
         denoised = denoised + (DELTA_MEAN * influence * 0.7)
 
-        # 4. Salto de Consistencia Blindado
         safe_sigma = max(sigma.item(), 1e-4)
         d = (x - denoised) / safe_sigma
         x = x + d * dt 
@@ -984,12 +1063,10 @@ def sample_agga_universal_bridge(model, x, sigmas, extra_args=None, callback=Non
         mag = denoised.std()
         
         if i == 0:
-            # 1. AUTO-DETECCIÓN DE BASE
             source_key = min(DNA_LIBRARY, key=lambda k: abs(DNA_LIBRARY[k]["std"] - mag.item()))
             source_dna = DNA_LIBRARY[source_key]
             target_dna = source_dna 
             
-            # 2. HACK DE DETECCIÓN DE PROMPT (Fix A1111/Reforge)
             prompt = ""
             for frame_info in inspect.stack():
                 if 'p' in frame_info.frame.f_locals:
@@ -998,7 +1075,6 @@ def sample_agga_universal_bridge(model, x, sigmas, extra_args=None, callback=Non
                         prompt = str(p_obj.prompt).lower()
                         break
             
-            # 3. MATRIZ DE COMANDOS
             detected_hacia = "Nativo (Auto)"
             detected_desde = "Auto-Detectado"
             for key in DNA_LIBRARY.keys():
@@ -1011,7 +1087,6 @@ def sample_agga_universal_bridge(model, x, sigmas, extra_args=None, callback=Non
                     source_key = key
                     detected_desde = "Forzado (Manual)"
 
-            # 4. SELECTOR DE POTENCIA
             modo_desc = "Estándar"
             if "modo_fuerte" in prompt: 
                 p_scale, p_mean = 1.35, 0.75
@@ -1026,7 +1101,6 @@ def sample_agga_universal_bridge(model, x, sigmas, extra_args=None, callback=Non
                 p_scale, p_mean = 0.0, 0.0
                 modo_desc = "Neutral (Solo Post-Proceso)"
 
-            # --- PANEL DE CONTROL AGGA: MOSTRANDO EL PODER ---
             print(f"\n" + "═"*60)
             print(f" 🚀 AGGA UNIVERSAL BRIDGE V10 - MOTOR ACTIVO")
             print(f" " + "─"*58)
@@ -1035,26 +1109,22 @@ def sample_agga_universal_bridge(model, x, sigmas, extra_args=None, callback=Non
             print(f" ⚡ MODO: {modo_desc}")
             print(f" 📈 PARÁMETROS: Scale {p_scale} | Mean Shift {p_mean}")
             
-            # Extraemos solo tus comandos del prompt para mostrarlos
             comandos = [w for w in prompt.split() if any(x in w for x in ["hacia_", "desde_", "modo_"])]
             if comandos: print(f" 📝 COMANDOS DETECTADOS: {', '.join(comandos)}")
             
             print(f" 🛠️  MÉTODO: Traducción Matricial de ADN (Campana de Gauss)")
             print(f"═"*60 + "\n")
 
-        # 5. INYECTOR DE NITIDEZ (Tus 0.16 clásicos)
         if 0.35 < progress < 0.85 and mag >= 0.90:
             blurred = F.avg_pool2d(denoised, kernel_size=3, stride=1, padding=1)
             denoised = denoised + ((denoised - blurred) * 0.16)
 
-        # 6. TRADUCCIÓN DE ADN MATRICIAL (Campana de Gauss)
         influence = 1.0 - (2.0 * progress - 1.0)**4
         scale_ratio = torch.clamp(torch.tensor(target_dna["std"] / (mag + 1e-6)), 0.6, 1.4)
         
         denoised = denoised * (1.0 + (scale_ratio - 1.0) * influence * p_scale)
         denoised = denoised + ((target_dna["mean"] - source_dna["mean"]) * influence * p_mean)
 
-        # 7. SUELO DE ENERGÍA Y SALTO
         if mag < 0.88: denoised = denoised * (0.95 / (mag + 1e-6))
         x = x + ((x - denoised) / max(sigma.item(), 1e-4)) * dt
 
