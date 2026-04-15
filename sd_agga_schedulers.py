@@ -3,7 +3,7 @@ from modules.sd_samplers_pseudo_hires import (
     get_sigmas_agga_dmd, 
     get_sigmas_log_linear, 
     get_sigmas_dynamic_rho, 
-    pseudo_hires_sigmas,
+    get_sigmas_pseudo_native,
     get_sigmas_agga_smart,
     get_sigmas_style_anchor,
     get_sigmas_ultra_anchor,
@@ -26,7 +26,7 @@ def register():
          lambda n, sigma_min, sigma_max, device, **k: get_sigmas_dynamic_rho(n, sigma_min, sigma_max, device), -1),
         
         ('agga_pseudo', 'AGGA Pseudo-Native', 
-         lambda n, sigma_min, sigma_max, device, **k: pseudo_hires_sigmas(n, sigma_min, sigma_max, device), -1),
+         lambda n, sigma_min, sigma_max, device, **k: get_sigmas_pseudo_native(n, sigma_min, sigma_max, device), -1),
 
         ('agga_smart', 'AGGA Smart-Automatic', 
          lambda n, sigma_min, sigma_max, device, **k: get_sigmas_agga_smart(n, sigma_min, sigma_max, device), -1),
