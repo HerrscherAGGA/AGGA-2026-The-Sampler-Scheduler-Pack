@@ -15,6 +15,7 @@ from modules.sd_samplers_pseudo_hires import (
 )
 
 def register():
+
     new_data = [
         ('agga_dmd_p', 'AGGA DMD Power', 
          lambda n, sigma_min, sigma_max, device, **k: get_sigmas_agga_dmd(n, sigma_min, sigma_max, device), 7.0),
@@ -30,21 +31,27 @@ def register():
 
         ('agga_smart', 'AGGA Smart-Automatic', 
          lambda n, sigma_min, sigma_max, device, **k: get_sigmas_agga_smart(n, sigma_min, sigma_max, device), -1),
-
-        ('agga_style_anchor', 'AGGA Style-Anchor', 
-         lambda n, sigma_min, sigma_max, device, **k: get_sigmas_style_anchor(n, sigma_min, sigma_max, device), -1),
-        ('agga_style_Ultra', 'AGGA Style-Ultra', 
-         lambda n, sigma_min, sigma_max, device, **k: get_sigmas_ultra_anchor(n, sigma_min, sigma_max, device), -1),
-        ('agga_double_anchor', 'AGGA Double-Anchor', 
-         lambda n, sigma_min, sigma_max, device, **k: get_sigmas_agga_double_anchor(n, sigma_min, sigma_max, device), -1),
+        
         ('agga_ays_anchor', 'AGGA AYS-Anchor', 
          lambda n, sigma_min, sigma_max, device, **k: get_sigmas_agga_ays_anchor(n, sigma_min, sigma_max, device), -1),
-        ('agga_pixel', 'AGGA Pixel Staircase', 
-         lambda n, sigma_min, sigma_max, device, **k: get_sigmas_agga_pixel_staircase(n, sigma_min, sigma_max, device), -1),
-        ('agga_pixel_v2', 'AGGA Pixel Staircase V2', 
-         lambda n, sigma_min, sigma_max, device, **k: get_sigmas_agga_pixel_staircase_v2(n, sigma_min, sigma_max, device), -1),
+        
+        ('agga_style_anchor', 'AGGA Style-Anchor', 
+         lambda n, sigma_min, sigma_max, device, **k: get_sigmas_style_anchor(n, sigma_min, sigma_max, device), -1),
+        
+        ('agga_style_Ultra', 'AGGA Style-Ultra', 
+         lambda n, sigma_min, sigma_max, device, **k: get_sigmas_ultra_anchor(n, sigma_min, sigma_max, device), -1),
+        
+        ('agga_double_anchor', 'AGGA Double-Anchor', 
+         lambda n, sigma_min, sigma_max, device, **k: get_sigmas_agga_double_anchor(n, sigma_min, sigma_max, device), -1),
+
         ('agga_LUB', 'AGGA UNIVERSAL BRIDGE', 
          lambda n, sigma_min, sigma_max, device, **k: get_sigmas_agga_lora_universal_bridge(n, sigma_min, sigma_max, device), -1),
+        
+        ('agga_pixel', 'AGGA Pixel Staircase', 
+         lambda n, sigma_min, sigma_max, device, **k: get_sigmas_agga_pixel_staircase(n, sigma_min, sigma_max, device), -1),
+        
+        ('agga_pixel_v2', 'AGGA Pixel Staircase V2', 
+         lambda n, sigma_min, sigma_max, device, **k: get_sigmas_agga_pixel_staircase_v2(n, sigma_min, sigma_max, device), -1),
     ]
 
     for name, label, func, rho in new_data:
@@ -56,5 +63,4 @@ def register():
     
     print(f"[AGGA Module] {len(new_data)} Schedulers registered successfully.")
 
-# Ejecutar automáticamente al ser importado por sd_schedulers.py
 register()
